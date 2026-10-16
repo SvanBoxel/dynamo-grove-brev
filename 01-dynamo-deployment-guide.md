@@ -301,7 +301,8 @@ echo "Using K8s-native discovery (no NATS/etcd required)"
 helm install dynamo-platform \
     dynamo-platform-$RELEASE_VERSION.tgz \
     --namespace $NAMESPACE \
-    --set dynamo-operator.namespaceRestriction.enabled=true
+    --set dynamo-operator.namespaceRestriction.enabled=true \
+    --set dynamo-operator.controllerManager.kubeRbacProxy.image.repository=registry.k8s.io/kubebuilder/kube-rbac-proxy
 
 echo ""
 echo "✓ Platform installation initiated"
@@ -1077,7 +1078,8 @@ helm fetch https://helm.ngc.nvidia.com/nvidia/ai-dynamo/charts/dynamo-platform-$
 # IMPORTANT: --set dynamo-operator.namespaceRestriction.enabled=true restricts operator to this namespace
 helm install dynamo-platform dynamo-platform-${RELEASE_VERSION}.tgz \
   --namespace ${NAMESPACE} \
-  --set dynamo-operator.namespaceRestriction.enabled=true
+  --set dynamo-operator.namespaceRestriction.enabled=true \
+  --set dynamo-operator.controllerManager.kubeRbacProxy.image.repository=registry.k8s.io/kubebuilder/kube-rbac-proxy
 
 # Step 4: Wait for platform pods to be ready (~2-3 minutes)
 echo "Waiting for platform pods to be ready..."
