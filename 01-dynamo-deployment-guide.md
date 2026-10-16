@@ -278,6 +278,8 @@ fi
 
 ### Step 2: Install Dynamo Platform
 
+The Helm commands below override the chart's legacy `gcr.io/kubebuilder/kube-rbac-proxy` repository with `registry.k8s.io/kubebuilder/kube-rbac-proxy`, retaining the chart's image tag. The `controllerManager` segment is required for this value to take effect.
+
 **Simplified in v0.8.0:** NATS and etcd are now **optional**. Dynamo uses Kubernetes-native service discovery (EndpointSlices) and TCP transport by default, making deployment simpler and reducing infrastructure dependencies.
 
 
@@ -297,11 +299,12 @@ helm fetch https://helm.ngc.nvidia.com/nvidia/ai-dynamo/charts/dynamo-platform-$
 
 # Install Dynamo platform (namespace-scoped, K8s-native discovery)
 echo "Installing Dynamo platform in namespace: $NAMESPACE"
-echo "Using K8s-native discovery (no NATS/etcd required)"
 helm install dynamo-platform \
     dynamo-platform-$RELEASE_VERSION.tgz \
     --namespace $NAMESPACE \
-    --set dynamo-operator.namespaceRestriction.enabled=true
+    --set dynamo-operator.namespaceRestriction.enabled=true \
+    --set dynamo-operator.controllerManager.kubeRbacProxy.image.repository=registry.k8s.io/kubebuilder/kube-rbac-proxy \
+    --set etcd.metrics.enabled=true
 
 echo ""
 echo "✓ Platform installation initiated"
@@ -925,10 +928,28 @@ kubectl get events -n $NAMESPACE --sort-by=.lastTimestamp | tail -20
 
 ### Common Issues
 
-1. **ImagePullBackOff**: Check if you have access to NGC containers. Verify image version is correct.
+1. **ImagePullBackOff**: Use `kubectl describe pod <pod-name> -n $NAMESPACE` to identify the failing container and image. For `nvcr.io` images, check NGC access and the image version. If `manager` pulled successfully but `kube-rbac-proxy` cannot pull `gcr.io/kubebuilder/kube-rbac-proxy:v0.15.0`, use the recovery steps below.
 2. **Pods stuck in Pending**: Check if GPU resources are available: `kubectl describe pod <pod-name> -n $NAMESPACE`
 3. **Model download slow**: First run takes longer due to model download. Check worker logs for progress.
 4. **Port forward not working**: Make sure pods are `1/1 Ready` before forwarding. Kill existing port-forward processes: `pkill -f port-forward`
+
+### Recover an Existing Operator with ImagePullBackOff
+
+For an existing deployment using the unavailable proxy image, run this cell to replace only that sidecar and wait for the operator rollout:
+
+```bash
+export NAMESPACE=${NAMESPACE:-dynamo}
+
+kubectl set image deployment/dynamo-platform-dynamo-operator-controller-manager \
+  kube-rbac-proxy=registry.k8s.io/kubebuilder/kube-rbac-proxy:v0.15.0 \
+  -n "$NAMESPACE" && \
+kubectl rollout status deployment/dynamo-platform-dynamo-operator-controller-manager \
+  -n "$NAMESPACE" --timeout=300s
+
+kubectl get pods -n "$NAMESPACE"
+```
+
+The operator pod should become `2/2` Ready and `Running`. Check the remaining platform pods separately before continuing. This patch changes the live Deployment; include the same `dynamo-operator.controllerManager.kubeRbacProxy.image.repository` override shown in Step 2 on subsequent Helm installs or upgrades so Helm retains the fix.
 
 ---
 
@@ -1060,42 +1081,45 @@ kubectl get nodes -o custom-columns=NAME:.metadata.name,GPUs:.status.capacity.nv
 
 
 ```bash
-# Step 1: Check if CRDs are already installed (cluster-wide)
-if kubectl get crd dynamographdeployments.nvidia.com &>/dev/null && \
-   kubectl get crd dynamocomponentdeployments.nvidia.com &>/dev/null; then
-    echo "✓ CRDs already installed"
-else
-    echo "⚠️  CRDs not found. Ask instructor to install them, or run:"
-    echo "helm fetch https://helm.ngc.nvidia.com/nvidia/ai-dynamo/charts/dynamo-crds-${RELEASE_VERSION}.tgz"
-    echo "helm install dynamo-crds dynamo-crds-${RELEASE_VERSION}.tgz --namespace default"
-fi
+# Verify kubectl is installed and configured
+kubectl version --client
+kubectl cluster-info
 
-# Step 2: Download Dynamo platform helm chart
+# Set your configuration
+export NAMESPACE="dynamo"
+export RELEASE_VERSION="0.8.0"
+export HF_TOKEN="your_hf_token"
+export CACHE_PATH="/data/huggingface-cache"
+
+# Create your personal namespace
+kubectl create namespace ${NAMESPACE}
+kubectl get namespace ${NAMESPACE}
+kubectl get nodes -o custom-columns=NAME:.metadata.name,GPUs:.status.capacity.nvidia\\.com/gpu
+
+# Download Dynamo platform helm chart
 helm fetch https://helm.ngc.nvidia.com/nvidia/ai-dynamo/charts/dynamo-platform-${RELEASE_VERSION}.tgz
 
-# Step 3: Install namespace-scoped Dynamo platform
-# IMPORTANT: --set dynamo-operator.namespaceRestriction.enabled=true restricts operator to this namespace
+# Install namespace-scoped Dynamo platform
 helm install dynamo-platform dynamo-platform-${RELEASE_VERSION}.tgz \
   --namespace ${NAMESPACE} \
-  --set dynamo-operator.namespaceRestriction.enabled=true
+  --set dynamo-operator.namespaceRestriction.enabled=true \
+  --set dynamo-operator.controllerManager.kubeRbacProxy.image.repository=registry.k8s.io/kubebuilder/kube-rbac-proxy \
+  --set etcd.metrics.enabled=true
 
-# Step 4: Wait for platform pods to be ready (~2-3 minutes)
+# Wait for platform pods to be ready (~2-3 minutes)
 echo "Waiting for platform pods to be ready..."
 kubectl wait --for=condition=ready pod \
   --all \
   --namespace ${NAMESPACE} \
   --timeout=300s
 
-# Step 5: Verify platform is running
 kubectl get pods -n ${NAMESPACE}
-# You should see: dynamo-operator, etcd, and nats pods in Running state
 
-# Step 6: Create HuggingFace token secret
+# Create HuggingFace token secret
 kubectl create secret generic hf-token-secret \
   --from-literal=HF_TOKEN="${HF_TOKEN}" \
   --namespace ${NAMESPACE}
 
-# Verify secret was created
 kubectl get secret hf-token-secret -n ${NAMESPACE}
 ```
 
